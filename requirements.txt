@@ -4,5 +4,6 @@ pandas
 scikit-learn
 joblib
 streamlit
-plotlyazure-identity
+plotly
+azure-identity
 azure-mgmt-appcontainers
