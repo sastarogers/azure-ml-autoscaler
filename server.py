@@ -2,6 +2,7 @@ import hashlib
 import os
 import time
 from flask import Flask, jsonify, request
+from prediction_controller import predict_from_demo_metrics
 
 app = Flask(__name__)
 
@@ -11,6 +12,7 @@ def home():
     return jsonify({
         "project": "Azure Predictive Autoscaler",
         "status": "running",
+        "endpoints": ["/health", "/work", "/predict"],
     })
 
 
@@ -38,6 +40,18 @@ def work():
         ),
         "iterations": iterations,
     })
+
+
+@app.get("/predict")
+def predict():
+    try:
+        result = predict_from_demo_metrics()
+        return jsonify(result)
+    except Exception:
+        app.logger.exception("Prediction failed")
+        return jsonify({
+            "error": "Prediction failed. Check application logs."
+        }), 500
 
 
 if __name__ == "__main__":
