@@ -1,9 +1,9 @@
-
 import os
 import math
 import joblib
 import numpy as np
 import pandas as pd
+import requests
 from datetime import datetime
 from azure.identity import DefaultAzureCredential
 
@@ -12,6 +12,9 @@ MODEL_PATH = "models/workload_model.joblib"
 MIN_REPLICAS = int(os.getenv("MIN_REPLICAS", "1"))
 MAX_REPLICAS = int(os.getenv("MAX_REPLICAS", "3"))
 TARGET_CPU = float(os.getenv("TARGET_CPU", "60"))
+
+RESOURCE_MANAGER_API = "https://management.azure.com"
+CONTAINER_APPS_API_VERSION = "2025-07-01"
 
 # Load the trained model.
 bundle = joblib.load(MODEL_PATH)
@@ -32,7 +35,6 @@ def predict_from_demo_metrics():
     """
     now = datetime.now()
     minute_of_day = now.hour * 60 + now.minute
-
     rng = np.random.default_rng()
 
     cpu_samples = np.clip(
@@ -75,41 +77,67 @@ def predict_from_demo_metrics():
 
 def apply_replica_count(replicas: int) -> dict:
     """
-    Update the Container App's configured replica limits.
-
-    Requires Azure environment variables and a working Azure identity.
-    This changes configuration; it does not guarantee an exact live
-    replica count.
+    Update only the Container App's template scale settings
+    using Azure Resource Manager's REST API.
     """
-    from azure.mgmt.appcontainers import ContainerAppsAPIClient
-
     subscription_id = os.environ["AZURE_SUBSCRIPTION_ID"]
     resource_group = os.environ["AZURE_RESOURCE_GROUP"]
     app_name = os.environ["AZURE_CONTAINER_APP_NAME"]
 
+    min_replicas = max(0, MIN_REPLICAS)
     max_allowed = max(1, MAX_REPLICAS)
-    recommended = max(1, min(max_allowed, int(replicas)))
+    recommended = max(min_replicas, min(max_allowed, int(replicas)))
 
     credential = DefaultAzureCredential()
-    client = ContainerAppsAPIClient(
-        credential,
-        subscription_id,
+    token = credential.get_token(
+        "https://management.azure.com/.default"
+    ).token
+
+    url = (
+        f"{RESOURCE_MANAGER_API}/subscriptions/{subscription_id}"
+        f"/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.App/containerApps/{app_name}"
     )
 
-    app = client.container_apps.get(resource_group, app_name)
+    response = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params={"api-version": CONTAINER_APPS_API_VERSION},
+        timeout=30,
+    )
+    response.raise_for_status()
+    app_data = response.json()
 
-    app.template.scale.min_replicas = 1
-    app.template.scale.max_replicas = recommended
+    properties = app_data.get("properties", {})
+    template = properties.get("template", {})
+    scale = template.get("scale", {})
 
-    client.container_apps.begin_update(
-        resource_group,
-        app_name,
-        app,
-    ).result()
+    scale["minReplicas"] = min_replicas
+    scale["maxReplicas"] = recommended
+    template["scale"] = scale
+
+    patch_response = requests.patch(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/merge-patch+json",
+        },
+        params={"api-version": CONTAINER_APPS_API_VERSION},
+        json={
+    "location": app_data["location"],
+    "properties": {
+        "template": {
+            "scale": scale,
+        }
+    },
+    },
+        timeout=60,
+    )
+    patch_response.raise_for_status()
 
     return {
         "app_name": app_name,
-        "min_replicas": 1,
+        "min_replicas": min_replicas,
         "max_replicas": recommended,
         "status": "updated",
     }
