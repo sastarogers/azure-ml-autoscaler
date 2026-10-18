@@ -14,6 +14,15 @@ from prediction_controller import (
 app = Flask(__name__)
 
 
+def valid_scaling_token():
+    expected_token = os.getenv("SCALING_API_TOKEN")
+    provided_token = request.headers.get("X-Scaling-Token", "")
+
+    return bool(expected_token) and hmac.compare_digest(
+        provided_token, expected_token
+    )
+
+
 @app.get("/")
 def home():
     return jsonify({
@@ -24,6 +33,7 @@ def home():
             "/work",
             "/predict",
             "/scale",
+            "/auto-scale",
         ],
     })
 
@@ -36,9 +46,7 @@ def health():
 @app.get("/work")
 def work():
     iterations = request.args.get(
-        "iterations",
-        default=10000,
-        type=int,
+        "iterations", default=10000, type=int
     )
     iterations = max(0, min(iterations or 10000, 100000))
 
@@ -50,8 +58,7 @@ def work():
 
     return jsonify({
         "latency_ms": round(
-            (time.perf_counter() - start) * 1000,
-            2,
+            (time.perf_counter() - start) * 1000, 2
         ),
         "iterations": iterations,
     })
@@ -60,8 +67,7 @@ def work():
 @app.get("/predict")
 def predict():
     try:
-        result = predict_from_demo_metrics()
-        return jsonify(result)
+        return jsonify(predict_from_demo_metrics())
     except Exception:
         app.logger.exception("Prediction failed")
         return jsonify({
@@ -71,15 +77,11 @@ def predict():
 
 @app.post("/scale")
 def scale():
-    expected_token = os.getenv("SCALING_API_TOKEN")
-    provided_token = request.headers.get("X-Scaling-Token", "")
-
-    if not expected_token:
-        return jsonify({
-            "error": "Scaling endpoint is not configured"
-        }), 503
-
-    if not hmac.compare_digest(provided_token, expected_token):
+    if not valid_scaling_token():
+        if not os.getenv("SCALING_API_TOKEN"):
+            return jsonify({
+                "error": "Scaling endpoint is not configured"
+            }), 503
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
@@ -93,7 +95,7 @@ def scale():
 
         max_allowed = max(1, int(os.getenv("MAX_REPLICAS", "3")))
 
-        if replicas < 1 or replicas > max_allowed:
+        if not 1 <= replicas <= max_allowed:
             return jsonify({
                 "error": f"replicas must be between 1 and {max_allowed}"
             }), 400
@@ -107,6 +109,33 @@ def scale():
         app.logger.exception("Scaling request failed")
         return jsonify({
             "error": "Scaling request failed. Check application logs."
+        }), 500
+
+
+@app.post("/auto-scale")
+def auto_scale():
+    if not valid_scaling_token():
+        if not os.getenv("SCALING_API_TOKEN"):
+            return jsonify({
+                "error": "Scaling endpoint is not configured"
+            }), 503
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        prediction = predict_from_demo_metrics()
+        replicas = prediction["recommended_replicas"]
+        scaling = apply_replica_count(replicas)
+
+        return jsonify({
+            "prediction": prediction,
+            "scaling": scaling,
+            "status": "success",
+        }), 200
+
+    except Exception:
+        app.logger.exception("Automatic scaling failed")
+        return jsonify({
+            "error": "Automatic scaling failed. Check application logs."
         }), 500
 
 
