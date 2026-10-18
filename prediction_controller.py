@@ -120,7 +120,7 @@ def apply_replica_count(replicas: int) -> dict:
         url,
         headers={
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/merge-patch+json",
+            "Content-Type": "application/json",
         },
         params={"api-version": CONTAINER_APPS_API_VERSION},
         json={
